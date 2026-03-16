@@ -1,9 +1,9 @@
 # Default configuration — overridden by .env values
 hotkey: "ctrl+shift+space"
-model: "whisper-1"
+whisper_model: "small"         # tiny | base | small | medium | large-v3
 language: "auto"
-cleanup_enabled: true
-cleanup_model: "gpt-4o"
-output_mode: "type"          # type | clipboard
-silence_threshold: 2.0       # seconds of silence to auto-stop
+cleanup_enabled: false
+cleanup_model: "llama3.2"     # Ollama model name
+output_mode: "type"           # type | clipboard
+silence_threshold: 2.0
 sample_rate: 16000

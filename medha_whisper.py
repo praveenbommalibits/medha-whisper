@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MedhaWhisper — Voice-to-text everywhere on macOS, powered by OpenAI Whisper."""
+"""MedhaWhisper — Voice-to-text everywhere on macOS. 100% local, no API keys."""
 
 import io
 import os
@@ -13,10 +13,10 @@ import wave
 
 import pyaudio
 import pyperclip
+import requests
 import rumps
 import yaml
 from dotenv import load_dotenv
-from openai import OpenAI
 from pynput import keyboard
 
 # ---------------------------------------------------------------------------
@@ -24,16 +24,14 @@ from pynput import keyboard
 # ---------------------------------------------------------------------------
 
 def _base_dir() -> str:
-    """Return the directory containing our files — works in .app bundle and source."""
-    if getattr(sys, "_MEIPASS", None):          # PyInstaller bundle
+    if getattr(sys, "_MEIPASS", None):
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
 
 BASE_DIR = _base_dir()
-
-# Load .env from bundle dir, then from ~/.medhawhisper/ as fallback
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 load_dotenv(os.path.expanduser("~/.medhawhisper/.env"))
+
 
 def _load_config() -> dict:
     cfg = {}
@@ -45,17 +43,35 @@ def _load_config() -> dict:
             break
     return {
         "hotkey": os.getenv("HOTKEY", cfg.get("hotkey", "ctrl+shift+space")),
-        "model": os.getenv("MODEL", cfg.get("model", "whisper-1")),
+        "whisper_model": os.getenv("WHISPER_MODEL", cfg.get("whisper_model", "small")),
         "language": os.getenv("LANGUAGE", cfg.get("language", "auto")),
-        "cleanup_enabled": os.getenv("CLEANUP_ENABLED", str(cfg.get("cleanup_enabled", True))).lower() == "true",
-        "cleanup_model": os.getenv("CLEANUP_MODEL", cfg.get("cleanup_model", "gpt-4o")),
+        "cleanup_enabled": os.getenv("CLEANUP_ENABLED", str(cfg.get("cleanup_enabled", False))).lower() == "true",
+        "cleanup_model": os.getenv("CLEANUP_MODEL", cfg.get("cleanup_model", "llama3.2")),
         "output_mode": os.getenv("OUTPUT_MODE", cfg.get("output_mode", "type")),
         "silence_threshold": float(os.getenv("SILENCE_THRESHOLD", cfg.get("silence_threshold", 2.0))),
         "sample_rate": int(os.getenv("SAMPLE_RATE", cfg.get("sample_rate", 16000))),
     }
 
+
 CONFIG = _load_config()
-client = OpenAI()  # uses OPENAI_API_KEY from env
+
+# ---------------------------------------------------------------------------
+# Local Whisper model (faster-whisper, runs on CPU/Metal)
+# ---------------------------------------------------------------------------
+
+_whisper_model = None
+
+
+def _get_whisper():
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        _whisper_model = WhisperModel(
+            CONFIG["whisper_model"],
+            device="cpu",
+            compute_type="int8",
+        )
+    return _whisper_model
 
 # ---------------------------------------------------------------------------
 # Audio recorder
@@ -65,6 +81,7 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = CONFIG["sample_rate"]
+
 
 class Recorder:
     def __init__(self):
@@ -101,7 +118,6 @@ class Recorder:
         if not self._recording:
             return (None, pyaudio.paComplete)
         self._frames.append(in_data)
-        # silence detection
         rms = self._rms(in_data)
         if rms < 300:
             if self._silence_start is None:
@@ -128,59 +144,56 @@ class Recorder:
         return buf.getvalue()
 
 # ---------------------------------------------------------------------------
-# Transcription + cleanup
+# Transcription (local) + cleanup (Ollama)
 # ---------------------------------------------------------------------------
 
 def transcribe(audio_bytes: bytes) -> str:
-    """Send audio to OpenAI Whisper API and return text."""
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.write(audio_bytes)
     tmp.close()
     try:
-        kwargs = {"model": CONFIG["model"], "file": open(tmp.name, "rb")}
-        if CONFIG["language"] != "auto":
-            kwargs["language"] = CONFIG["language"]
-        resp = client.audio.transcriptions.create(**kwargs)
-        return resp.text.strip()
+        model = _get_whisper()
+        lang = None if CONFIG["language"] == "auto" else CONFIG["language"]
+        segments, _ = model.transcribe(tmp.name, language=lang, beam_size=5)
+        return " ".join(seg.text.strip() for seg in segments).strip()
     finally:
         os.unlink(tmp.name)
 
 
 def cleanup_text(text: str) -> str:
-    """Polish text with GPT-4o — fix grammar, punctuation, formatting."""
+    """Polish text via Ollama (local LLM). Fails silently if Ollama isn't running."""
     if not CONFIG["cleanup_enabled"] or not text:
         return text
-    resp = client.chat.completions.create(
-        model=CONFIG["cleanup_model"],
-        messages=[
-            {"role": "system", "content": (
-                "You are a text cleanup assistant. Fix grammar, punctuation, "
-                "and formatting. Keep the original meaning and tone. "
-                "Return ONLY the cleaned text, nothing else."
-            )},
-            {"role": "user", "content": text},
-        ],
-        temperature=0.3,
-        max_tokens=2048,
-    )
-    return resp.choices[0].message.content.strip()
+    try:
+        resp = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": CONFIG["cleanup_model"],
+                "prompt": (
+                    "Fix grammar, punctuation, and formatting of this transcribed speech. "
+                    "Keep the original meaning and tone. Return ONLY the cleaned text:\n\n" + text
+                ),
+                "stream": False,
+            },
+            timeout=15,
+        )
+        if resp.ok:
+            return resp.json().get("response", text).strip()
+    except Exception:
+        pass
+    return text
 
 # ---------------------------------------------------------------------------
-# Output — type at cursor or copy to clipboard
+# Output
 # ---------------------------------------------------------------------------
 
 def output_text(text: str):
     if CONFIG["output_mode"] == "clipboard":
         pyperclip.copy(text)
     else:
-        _type_via_applescript(text)
-
-
-def _type_via_applescript(text: str):
-    """Type text at the current cursor position using AppleScript keystroke."""
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    script = f'tell application "System Events" to keystroke "{escaped}"'
-    subprocess.run(["osascript", "-e", script], check=False)
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'tell application "System Events" to keystroke "{escaped}"'
+        subprocess.run(["osascript", "-e", script], check=False)
 
 # ---------------------------------------------------------------------------
 # Menu bar app
@@ -194,27 +207,22 @@ class MedhaWhisperApp(rumps.App):
         self.menu = [
             rumps.MenuItem("Start / Stop Recording  (Ctrl+Shift+Space)", callback=self._toggle),
             None,
+            rumps.MenuItem(f"Model: {CONFIG['whisper_model']}"),
             rumps.MenuItem(f"Mode: {CONFIG['output_mode']}", callback=self._toggle_mode),
             rumps.MenuItem(f"Cleanup: {'on' if CONFIG['cleanup_enabled'] else 'off'}", callback=self._toggle_cleanup),
             None,
         ]
         self._start_hotkey_listener()
-
-    # -- hotkey ---------------------------------------------------------------
+        # Pre-load whisper model in background
+        threading.Thread(target=_get_whisper, daemon=True).start()
 
     def _start_hotkey_listener(self):
-        combo = self._parse_hotkey(CONFIG["hotkey"])
+        mapping = {"ctrl": "<ctrl>", "shift": "<shift>", "alt": "<alt>", "cmd": "<cmd>", "space": "<space>"}
+        parts = [mapping.get(p.strip().lower(), p.strip().lower()) for p in CONFIG["hotkey"].split("+")]
+        combo = "+".join(parts)
         listener = keyboard.GlobalHotKeys({combo: self._toggle})
         listener.daemon = True
         listener.start()
-
-    @staticmethod
-    def _parse_hotkey(raw: str) -> str:
-        mapping = {"ctrl": "<ctrl>", "shift": "<shift>", "alt": "<alt>", "cmd": "<cmd>", "space": "<space>"}
-        parts = [mapping.get(p.strip().lower(), p.strip().lower()) for p in raw.split("+")]
-        return "+".join(parts)
-
-    # -- toggle recording -----------------------------------------------------
 
     def _toggle(self, _=None):
         if self._busy:
@@ -228,13 +236,11 @@ class MedhaWhisperApp(rumps.App):
         self.title = "🔴"
         self.recorder.start()
         rumps.notification("MedhaWhisper", "Recording…", "Speak now. Press hotkey or pause to stop.")
-        # monitor for silence-based auto-stop
         threading.Thread(target=self._watch_silence, daemon=True).start()
 
     def _watch_silence(self):
         while self.recorder.is_recording:
             time.sleep(0.2)
-        # auto-stopped by silence
         if not self._busy:
             self._stop_and_transcribe()
 
@@ -259,8 +265,6 @@ class MedhaWhisperApp(rumps.App):
             self.title = "🎙"
             self._busy = False
 
-    # -- menu actions ---------------------------------------------------------
-
     def _toggle_mode(self, sender):
         CONFIG["output_mode"] = "clipboard" if CONFIG["output_mode"] == "type" else "type"
         sender.title = f"Mode: {CONFIG['output_mode']}"
@@ -270,14 +274,7 @@ class MedhaWhisperApp(rumps.App):
         sender.title = f"Cleanup: {'on' if CONFIG['cleanup_enabled'] else 'off'}"
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def main():
-    if not os.getenv("OPENAI_API_KEY"):
-        print("ERROR: Set OPENAI_API_KEY in .env or environment.")
-        raise SystemExit(1)
     MedhaWhisperApp().run()
 
 
