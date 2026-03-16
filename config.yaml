@@ -2,8 +2,8 @@
 hotkey: "ctrl+shift+space"
 whisper_model: "small"         # tiny | base | small | medium | large-v3
 language: "auto"
-cleanup_enabled: false
-cleanup_model: "llama3.2"     # Ollama model name
+cleanup_enabled: true
+cleanup_model: "llama3.1:8b"  # Ollama model name
 output_mode: "type"           # type | clipboard
 silence_threshold: 2.0
 sample_rate: 16000

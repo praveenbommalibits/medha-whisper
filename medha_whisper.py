@@ -160,6 +160,19 @@ def transcribe(audio_bytes: bytes) -> str:
         os.unlink(tmp.name)
 
 
+CLEANUP_PROMPT = (
+    "You are a speech-to-text post-processor. Your ONLY job is to clean up "
+    "transcribed speech. Rules:\n"
+    "1. Fix grammar, spelling, and punctuation\n"
+    "2. Remove filler words (um, uh, like, you know)\n"
+    "3. Fix sentence boundaries and capitalization\n"
+    "4. If the input is Hinglish, output clean English\n"
+    "5. NEVER add new information or change meaning\n"
+    "6. Return ONLY the cleaned text, no explanations\n\n"
+    "Transcribed speech:\n"
+)
+
+
 def cleanup_text(text: str) -> str:
     """Polish text via Ollama (local LLM). Fails silently if Ollama isn't running."""
     if not CONFIG["cleanup_enabled"] or not text:
@@ -169,16 +182,15 @@ def cleanup_text(text: str) -> str:
             "http://localhost:11434/api/generate",
             json={
                 "model": CONFIG["cleanup_model"],
-                "prompt": (
-                    "Fix grammar, punctuation, and formatting of this transcribed speech. "
-                    "Keep the original meaning and tone. Return ONLY the cleaned text:\n\n" + text
-                ),
+                "prompt": CLEANUP_PROMPT + text,
                 "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 1024},
             },
-            timeout=15,
+            timeout=30,
         )
         if resp.ok:
-            return resp.json().get("response", text).strip()
+            cleaned = resp.json().get("response", "").strip()
+            return cleaned if cleaned else text
     except Exception:
         pass
     return text
