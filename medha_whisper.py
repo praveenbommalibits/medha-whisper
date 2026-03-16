@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """MedhaWhisper — Voice-to-text everywhere on macOS. 100% local, no API keys."""
 
+import multiprocessing
+multiprocessing.freeze_support()
+
 import io
 import os
 import struct
