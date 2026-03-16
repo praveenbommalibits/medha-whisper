@@ -42,12 +42,31 @@ python medha_whisper.py
 
 ## Install as Background Service
 
-```bash
-# Install as macOS LaunchAgent (starts on login)
-./install.sh
+### Option 1: Native Mac App (Recommended)
 
-# Uninstall
-./uninstall.sh
+```bash
+# One-time setup
+./setup.sh                    # Creates ~/.medhawhisper/.env
+nano ~/.medhawhisper/.env     # Add your OPENAI_API_KEY
+
+# Build the .app
+source venv/bin/activate
+python build_app.py
+```
+
+Then:
+1. Drag `dist/MedhaWhisper.app` → `/Applications`
+2. Right-click → Open (first launch only, to bypass Gatekeeper)
+3. Grant Microphone + Accessibility permissions when prompted
+
+**Auto-start on login:**
+System Settings → General → Login Items → click `+` → select MedhaWhisper
+
+### Option 2: LaunchAgent (CLI-based)
+
+```bash
+./install.sh    # Starts on login automatically
+./uninstall.sh  # Remove
 ```
 
 ## Configuration

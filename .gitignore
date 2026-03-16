@@ -22,3 +22,8 @@ venv/
 
 # Temp audio
 *.wav
+
+# PyInstaller build
+build/
+dist/
+*.spec

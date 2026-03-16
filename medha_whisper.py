@@ -5,6 +5,7 @@ import io
 import os
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -22,14 +23,26 @@ from pynput import keyboard
 # Config
 # ---------------------------------------------------------------------------
 
-load_dotenv()
+def _base_dir() -> str:
+    """Return the directory containing our files — works in .app bundle and source."""
+    if getattr(sys, "_MEIPASS", None):          # PyInstaller bundle
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+BASE_DIR = _base_dir()
+
+# Load .env from bundle dir, then from ~/.medhawhisper/ as fallback
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+load_dotenv(os.path.expanduser("~/.medhawhisper/.env"))
 
 def _load_config() -> dict:
     cfg = {}
-    config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            cfg = yaml.safe_load(f) or {}
+    for p in [os.path.join(BASE_DIR, "config.yaml"),
+              os.path.expanduser("~/.medhawhisper/config.yaml")]:
+        if os.path.exists(p):
+            with open(p) as f:
+                cfg = yaml.safe_load(f) or {}
+            break
     return {
         "hotkey": os.getenv("HOTKEY", cfg.get("hotkey", "ctrl+shift+space")),
         "model": os.getenv("MODEL", cfg.get("model", "whisper-1")),
