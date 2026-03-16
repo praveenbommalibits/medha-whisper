@@ -1,0 +1,9 @@
+# Default configuration — overridden by .env values
+hotkey: "ctrl+shift+space"
+model: "whisper-1"
+language: "auto"
+cleanup_enabled: true
+cleanup_model: "gpt-4o"
+output_mode: "type"          # type | clipboard
+silence_threshold: 2.0       # seconds of silence to auto-stop
+sample_rate: 16000
